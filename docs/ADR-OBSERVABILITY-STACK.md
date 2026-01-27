@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2024-04-01
-**Updated:** 2026-01-16
+**Updated:** 2026-01-27
 
 ## Context
 
@@ -41,7 +41,7 @@ flowchart TB
     end
 
     subgraph Archival["Archival S3"]
-        R2[Cloudflare R2]
+        Archive[Cloud Provider Storage<br/>or Cloudflare R2]
     end
 
     Apps --> Alloy
@@ -51,7 +51,7 @@ flowchart TB
     Loki --> MinIO
     Tempo --> MinIO
     Mimir --> MinIO
-    MinIO -->|"Tier cold data"| R2
+    MinIO -->|"Tier cold data"| Archive
     Grafana --> Loki
     Grafana --> Tempo
     Grafana --> Mimir
@@ -92,13 +92,13 @@ flowchart LR
     end
 
     subgraph Cold["Cold (Archival S3)"]
-        R2[Cloudflare R2]
+        Archive[Cloud Provider Storage]
     end
 
     Loki[Loki] --> MinIO
     Tempo[Tempo] --> MinIO
     Mimir[Mimir] --> MinIO
-    MinIO -->|"Tier > 7 days"| R2
+    MinIO -->|"Tier > 7 days"| Archive
 ```
 
 | Tier | Storage | Latency | Retention |
@@ -180,6 +180,58 @@ flowchart TB
 ```
 
 Each region has its own LGTM stack. Cross-region queries possible via Grafana datasource configuration.
+
+## Cardinality Management
+
+### Best Practices
+
+```yaml
+# Good: Bounded labels
+http_requests_total{service, endpoint, method, status_code}
+# ~10 services × 50 endpoints × 5 methods × 20 codes = 50,000
+
+# Bad: Unbounded labels
+http_requests_total{user_id, request_id}
+# Millions of users × Billions of requests = DISASTER
+```
+
+### Cardinality Limits (Mimir)
+
+```yaml
+limits:
+  max_label_names_per_series: 30
+  max_series_per_user: 5000000
+  max_series_per_metric: 50000
+  ingestion_rate: 25000
+```
+
+## Key Queries
+
+### LogQL (Loki)
+
+```promql
+# Errors in namespace
+{namespace="<tenant>-prod"} |= "error" | json | level="error"
+
+# Slow requests
+{namespace="<tenant>-prod"} | json | response_time > 1000
+```
+
+### PromQL (Mimir)
+
+```promql
+# Error rate
+sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+
+# P95 latency
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+```
+
+### TraceQL (Tempo)
+
+```
+{resource.service.name="<tenant>-api"} | duration > 1s
+```
 
 ## Consequences
 
